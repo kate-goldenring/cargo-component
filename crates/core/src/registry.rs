@@ -384,10 +384,14 @@ impl<'a> DecodedDependency<'a> {
     }
 
     /// Gets the package name of the decoded dependency.
-    pub fn package_name(&self) -> &PackageName {
+    pub fn package_ref(&self) -> PackageRef {
         match self {
-            Self::Wit { package, .. } => &package.main.name,
-            Self::Wasm { decoded, .. } => &decoded.resolve().packages[decoded.package()].name,
+            Self::Wit { resolution, .. } => resolution.name().clone(),
+            Self::Wasm { decoded, .. } => { let name = &decoded.resolve().packages[decoded.package()].name;
+                let s = name.to_string();
+                let pr = PackageRef::try_from(s).expect("failed to parse package ref");
+                pr
+            }
         }
     }
 

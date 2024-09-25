@@ -86,11 +86,12 @@ async fn parse_wit_package(
     // Start by decoding all of the dependencies
     let mut deps = IndexMap::new();
     for (name, resolution) in dependencies {
+        println!("Decoding dependency `{}`", name);
         let decoded = resolution.decode().await?;
-        if let Some(prev) = deps.insert(decoded.package_name().clone(), decoded) {
+        if let Some(prev) = deps.insert(decoded.package_ref().clone(), decoded) {
             bail!(
                 "duplicate definitions of package `{prev}` found while decoding dependency `{name}`",
-                prev = prev.package_name()
+                prev = prev.package_ref()
             );
         }
     }
@@ -163,11 +164,11 @@ async fn parse_wit_package(
 
     fn visit<'a>(
         dep: &'a DecodedDependency<'a>,
-        deps: &'a IndexMap<PackageName, DecodedDependency>,
-        order: &mut IndexSet<PackageName>,
-        visiting: &mut HashSet<&'a PackageName>,
+        deps: &'a IndexMap<PackageRef, DecodedDependency>,
+        order: &mut IndexSet<PackageRef>,
+        visiting: &mut HashSet<PackageRef>,
     ) -> Result<()> {
-        if order.contains(dep.package_name()) {
+        if order.contains(&dep.package_ref()) {
             return Ok(());
         }
 
@@ -178,16 +179,17 @@ async fn parse_wit_package(
                 resolution,
             } => {
                 for name in package.main.foreign_deps.keys() {
+                    let pkg_ref = PackageRef::try_from(name.to_string()).expect("failed to parse package reference");
                     // Only visit known dependencies
                     // wit-parser will error on unknown foreign dependencies when
                     // the package is resolved
-                    if let Some(dep) = deps.get(name) {
-                        if !visiting.insert(name) {
+                    if let Some(dep) = deps.get(&pkg_ref) {
+                        if !visiting.insert(pkg_ref.clone()) {
                             bail!("foreign dependency `{name}` forms a dependency cycle while parsing dependency `{other}`", other = resolution.name());
                         }
 
                         visit(dep, deps, order, visiting)?;
-                        assert!(visiting.remove(name));
+                        assert!(visiting.remove(&pkg_ref));
                     }
                 }
             }
@@ -197,25 +199,25 @@ async fn parse_wit_package(
             } => {
                 // Look for foreign packages in the decoded dependency
                 for (_, package) in &decoded.resolve().packages {
-                    if package.name.namespace == dep.package_name().namespace
-                        && package.name.name == dep.package_name().name
+                    if package.name.namespace == dep.package_ref().namespace().to_string()
+                        && package.name.name == dep.package_ref().name().to_string()
                     {
                         continue;
                     }
-
-                    if let Some(dep) = deps.get(&package.name) {
-                        if !visiting.insert(&package.name) {
+                    let pkg_ref = PackageRef::try_from(package.name.to_string()).expect("ouch");
+                    if let Some(dep) = deps.get(&pkg_ref) {
+                        if !visiting.insert(pkg_ref.clone()) {
                             bail!("foreign dependency `{name}` forms a dependency cycle while parsing dependency `{other}`", name = package.name, other = resolution.name());
                         }
 
                         visit(dep, deps, order, visiting)?;
-                        assert!(visiting.remove(&package.name));
+                        assert!(visiting.remove(&pkg_ref));
                     }
                 }
             }
         }
 
-        assert!(order.insert(dep.package_name().clone()));
+        assert!(order.insert(dep.package_ref().clone()));
 
         Ok(())
     }

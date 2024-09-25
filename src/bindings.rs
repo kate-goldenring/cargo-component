@@ -249,10 +249,11 @@ impl<'a> BindingsGenerator<'a> {
         let mut deps = IndexMap::new();
         for (id, resolution) in &resolution.target_resolutions {
             let decoded = resolution.decode().await?;
-            let name = decoded.package_name();
+            let name = decoded.package_ref();
+            println!("Decoding dependency `{}`", name);
 
             if let Some(prev) = deps.insert(name.clone(), decoded) {
-                bail!("duplicate definitions of package `{name}` found while decoding target dependency `{id}`", name = prev.package_name());
+                bail!("duplicate definitions of package `{name}` found while decoding target dependency `{id}`", name = prev.package_ref());
             }
         }
 
@@ -290,11 +291,14 @@ impl<'a> BindingsGenerator<'a> {
 
         // Merge all of the dependencies first
         for name in order {
+            println!("Merging dependency `{}`", name);
             match deps.swap_remove(&name).unwrap() {
                 DecodedDependency::Wit {
                     resolution,
                     package,
+                    ..
                 } => {
+                    println!("Merging wit package");
                     source_files.extend(package.source_map.source_files().map(Path::to_path_buf));
                     merged.push_group(package).with_context(|| {
                         format!(
@@ -321,13 +325,14 @@ impl<'a> BindingsGenerator<'a> {
                 }
             }
         }
-
+        println!("Merging  with root");
         let package = merged.push_group(root).with_context(|| {
             format!(
                 "failed to merge local target `{path}`",
                 path = path.display()
             )
         })?;
+        println!("Selecting world");
 
         let world = merged
             .select_world(package, world)
@@ -348,11 +353,11 @@ impl<'a> BindingsGenerator<'a> {
 
         fn visit<'a>(
             dep: &'a DecodedDependency<'a>,
-            deps: &'a IndexMap<PackageName, DecodedDependency>,
-            order: &mut IndexSet<PackageName>,
-            visiting: &mut HashSet<&'a PackageName>,
+            deps: &'a IndexMap<PackageRef, DecodedDependency>,
+            order: &mut IndexSet<PackageRef>,
+            visiting: &mut HashSet<PackageRef>,
         ) -> Result<()> {
-            if order.contains(dep.package_name()) {
+            if order.contains(&dep.package_ref()) {
                 return Ok(());
             }
 
@@ -361,20 +366,22 @@ impl<'a> BindingsGenerator<'a> {
                 DecodedDependency::Wit {
                     package,
                     resolution,
+                    ..
                 } => {
                     for name in package.main.foreign_deps.keys() {
-                        if !visiting.insert(name) {
+                        let pkg_ref = PackageRef::try_from(name.to_string())?;
+                        if !visiting.insert(pkg_ref.clone()) {
                             bail!("foreign dependency `{name}` forms a dependency cycle while parsing target dependency `{other}`", other = resolution.name());
                         }
 
                         // Only visit known dependencies
                         // wit-parser will error on unknown foreign dependencies when
                         // the package is resolved
-                        if let Some(dep) = deps.get(name) {
+                        if let Some(dep) = deps.get(&pkg_ref) {
                             visit(dep, deps, order, visiting)?
                         }
 
-                        assert!(visiting.remove(name));
+                        assert!(visiting.remove(&pkg_ref));
                     }
                 }
                 DecodedDependency::Wasm { .. } => {
@@ -382,7 +389,7 @@ impl<'a> BindingsGenerator<'a> {
                 }
             }
 
-            assert!(order.insert(dep.package_name().clone()));
+            assert!(order.insert(dep.package_ref().clone()));
 
             Ok(())
         }
